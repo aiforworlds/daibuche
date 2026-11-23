@@ -1,0 +1,21 @@
+《电动滑板开源代码》
+作者：bilibili 守辰宇
+开源文档：https://shouchenyu.feishu.cn/wiki/PxnSwaRRRixkaokr8oBcpYotnyb
+打开上述链接后，在资料目录中找到《电动滑板开源文档｜宇的DIY#1》，即可获得开源资料
+
+如有疑问可在上述链接中找到打赏专属Q群，联系群主获取帮助。
+
+
+开源声明
+- 该开源项目仅允许个人学习用途，不允许用于任何形式的商业目的。如需商业使用请与我联系。shouchenyu2020@qq.com
+- 转载时必须明显标注作者或直接转载该文档的链接。
+- 本人不对该开源项目中的产品进行任何安全性保证。所有代码、硬件电路、机械结构均需要使用者自行确保安全性。
+- 该文档中不介绍使用方法，仅介绍实现原理与功能。开源工程均为可编辑的开发文件，并非可直接生产制造的文件：硬件电路需要自行导出制板文件进行生产、软件代码需要自行编译下载、机械结构需要自行导出成可加工文件。需要使用者有一定的开发基础，以便能够确保使用的安全性。
+- 允许用户在此开源基础上进行二次开发并作为自己的作品使用。对二次开发的功能不做版权限制。
+- 若发现该文档中有错误或需要补充的部分，可以通过链接向我反馈：https://shouchenyu.feishu.cn/share/base/form/shrcn0Dh91XxmXbb7dSQfVhrjxg
+- 如果您在开发中遇到问题，可以通过付费咨询向我提问。详情请点击链接：守辰宇的付费咨询介绍
+- 建议复刻此项目前，先学习基础的嵌入式入门知识：
+  - 编译下载代码：STM32课程https://www.bilibili.com/video/BV11C411h79W/
+  - PCB电路板导出与下单：嘉立创PCB课程https://www.bilibili.com/video/BV1bj4bzEEQQ/
+  - PCB元件焊接：插件焊接https://www.bilibili.com/video/BV1hc41167iA/ 贴片焊接https://www.bilibili.com/video/BV1h3C1BREkv/
+

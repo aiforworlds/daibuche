@@ -1,0 +1,16 @@
+{
+    "files.associations": {
+        "serial.h": "c",
+        "stdarg.h": "c",
+        "__tuple": "c",
+        "array": "c",
+        "hall.h": "c",
+        "apptime.h": "c",
+        "main.h": "c",
+        "string.h": "c",
+        "stm32f10x.h": "c",
+        "stdlib.h": "c",
+        "serial_3.h": "c",
+        "bldc_motor.h": "c"
+    }
+}

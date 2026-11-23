@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "stdarg.h": "c",
+        "serial.h": "c",
+        "delay.h": "c",
+        "oled.h": "c"
+    }
+}
