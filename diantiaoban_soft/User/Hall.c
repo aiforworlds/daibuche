@@ -26,9 +26,45 @@ volatile HallSensorTypeDef HallSensor;		//声明结构体，存储霍尔位置�
 int Hall_Movement_Log = 0;			//临时存储上一个Hall位置
 volatile uint16_t Hall_Count = 0;		//固定时间内，中断发起的次数，用于计算速度。
 volatile int Hall_Count_temp = 0;		//固定时间内，中断发起的次数，用于计算速度。
-volatile float Hall_speed = 0;			//时速 km/h
+volatile float Hall_speed = 0;			//时速 km/h（+ = 按当前指令方向前进）
 volatile float Hall_rollSpeed = 0;		//转速 rp/s
-volatile int Hall_Direction = 0;			//旋转方向
+volatile int Hall_Direction = 0;			//旋转方向（原始符号：含 DIRECTION 与 Motor_run_direction）
+
+// 2026-11-24：方向符号自学习（见 Hall.h）。Hall_Direction 的符号取决于电机相线/霍尔线接法，
+// 代码推不出来，所以运行时实测：只要推油门让轮子转起来，就把当时的符号记成“前进”。
+volatile int8_t  Hall_fwd_sign = HALL_FWD_FALLBACK_SIGN;
+volatile uint8_t Hall_fwd_learned = 0;
+
+// 归一化方向：+1 = 正按当前指令方向旋转，-1 = 反着转，0 = 未知
+int8_t Hall_GetDirCmd(void)
+{
+	int d = Hall_Direction * Hall_fwd_sign;
+	if (d > 0) return 1;
+	if (d < 0) return -1;
+	return 0;
+}
+
+// 在“正在给油门”时调用。
+// 只采信**从静止起步**那一次：上一拍转速还很慢（<1rps）、这一拍已经起来了（>2rps），方向才可靠。
+// 这样“坡上给油门但车在倒溜”“堵转抖动”都不会把符号学反。
+void Hall_LearnForward(uint8_t driving)
+{
+	static float last_abs_rps = 0.0f;
+	float abs_rps = (Hall_rollSpeed < 0.0f) ? -Hall_rollSpeed : Hall_rollSpeed;
+
+	if (Hall_fwd_learned || !driving)
+	{
+		last_abs_rps = abs_rps;
+		return;
+	}
+
+	if (last_abs_rps < 1.0f && abs_rps > 2.0f && Hall_Direction != 0)	// 约 2rps ≈ 1.9km/h
+	{
+		Hall_fwd_sign = (Hall_Direction > 0) ? 1 : -1;
+		Hall_fwd_learned = 1;
+	}
+	last_abs_rps = abs_rps;
+}
 
 
 void Hall_GetPosition(void)
@@ -64,6 +100,7 @@ void Hall_directionLoopCheck(void)
 
 	if (Movement == 1 || Movement == -1)
 	{
+		// 原始符号（含 DIRECTION 与 Motor_run_direction）。对外一律用 Hall_GetDirCmd() 归一化。
 		Hall_Direction = Movement * DIRECTION * Motor_run_direction;
 	}
 }
@@ -151,7 +188,8 @@ void Get_rollSpeed(void)
 
 	if (Hall_Direction != 0)
 	{
-		Speed = Speed * Hall_Direction;
+		// 用归一化方向：+1 = 按当前指令方向前进，-1 = 倒转
+		Speed = Speed * Hall_GetDirCmd();
 	}
 
 	Hall_rollSpeed = RPM_filter(Speed);

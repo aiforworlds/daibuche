@@ -13,7 +13,9 @@
 
 
 
-uint16_t AD_Value[4];
+// 2026-11-24：DMA 目标数组必须是 volatile（DMA 在后台写、CPU 读）。
+// 非 volatile 时，"读-判断-再读"的等待循环会被 GCC 优化成死循环（见 main.c joy_neutral_learn 注释）。
+volatile uint16_t AD_Value[4];
 
 void AD_Init(void)		//AD初始化函数
 {

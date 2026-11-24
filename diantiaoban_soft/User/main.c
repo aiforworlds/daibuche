@@ -94,7 +94,8 @@ void Serial_Rx_loopCheck(void)		// 该串口用于链接电脑调试
 		else if (Serial_RxPacket[0] == '3')
 		{
 			//Serial_Printf("Motor_Direction:%d\r\n", Motor_Direction());
-			Serial_Printf("Speed:%f; Movement:%d", Get_Speed(), Hall_Direction);
+			// dirCmd: +1=按指令方向转 / -1=反着转 / 0=未知；learned=1 表示方向符号已自学习完成
+			Serial_Printf("Speed:%f; Movement:%d; dirCmd:%d; learned:%d", Get_Speed(), Hall_Direction, Hall_GetDirCmd(), Hall_fwd_learned);
 		}
 		else if (Serial_RxPacket[0] == '4')
 		{
@@ -750,11 +751,26 @@ void CMD_timeSynchronous(uint8_t *pack)
 	softWatchDog_feed();
 }
 
+/* 遥控 → 电调 的油门映射（2026-11-24 重新核对）
+ * 遥控板协议：心跳里的 speed 0~200，**100 = 中位**；
+ *   遥控板自己的“限速”和“停止模式”分支都写作 `if (target_speed < 100) → 前进动力`，
+ *   即 **<100 是前进（油门）、>100 是刹车**（见 遥控板 main.c 的 target_speed 映射）。
+ * 电调 Motor_Control 约定：Speed > 0 = 油门、Speed < 0 = 刹车。
+ * 所以必须 `SetSpeedRC = 100 - speed`（前进=正）。这正是 V2.0/V2.1/V2.2 的原始写法。
+ *
+ * 2026-11-24 早些时候曾把它“翻号”成 `speed - 100`，那次的判断依据是把 >100 当成前进，
+ * 与遥控板代码相反 —— 翻号会让油门和刹车互换，是错的，这里已改回。
+ * 另外加一个中位死区：|100-speed| < SPEED_CMD_DEADBAND 一律当 0，防止遥控器中位
+ * 漂移产生的 ±1~4 个码的小油门让电机“归零后还在慢转”。
+ */
+#define SPEED_CMD_DEADBAND	5		// 中位死区（目标值单位，1 码 ≈ 1% 占空比）
 void CMD_heartbeat(uint8_t *pack)
 {
 	RC_heartbeat_downlink_t *packet = (RC_heartbeat_downlink_t*) pack;
 
-	SetSpeedRC = -((int16_t)packet->speed - 100);
+	int16_t cmd = 100 - (int16_t)packet->speed;		// 前进=正，刹车=负
+	if (cmd >= -SPEED_CMD_DEADBAND && cmd <= SPEED_CMD_DEADBAND)	cmd = 0;	// 含边界，边界值也归零
+	SetSpeedRC = cmd;
 	Motor_run_direction = packet->direction;
 	if (packet->status != normal)
 	{

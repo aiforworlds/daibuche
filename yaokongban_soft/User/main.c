@@ -23,7 +23,7 @@
 // *************** 低功耗休眠（30秒无操作自动进入STOP模式，按键唤醒） ***************
 extern volatile uint32_t last_activity_time;
 extern uint8_t  sleep_active;
-extern uint16_t AD_Value[4];
+extern volatile uint16_t AD_Value[4];	// DMA 写，必须 volatile（AD.h 里已有同名声明，类型需一致）
 void Sleep_ReportActivity(void);
 void Serial_3_DMA_RX_Init(void);   // 唤醒后重启无线模块 DMA 接收
 
@@ -71,13 +71,15 @@ static void Sleep_Wakeup(void)
 	last_activity_time = APP_time;
 }
 
+static int16_t joy_neutral = 2048;	// 上电自学习到的摇杆中位 AD 值（见 joy_neutral_learn）
+
 // 低功耗休眠检测：活动（摇杆偏离中位 / 串口收数据）则复位计时，30 秒无活动则进入 STOP。
 // 注意：必须同时放进主循环和 NTP 对时的内层 while 里（无电调对时时程序会卡在内层 while，
 // 若只放在主循环末尾，将永远走不到休眠）。
 static void Sleep_Check(void)
 {
 	int16_t joy = (int16_t)AD_Value[0];
-	uint8_t joy_active = (joy < (2048 - 100)) || (joy > (2048 + 100));   // 偏离中位死区
+	uint8_t joy_active = (joy < (joy_neutral - 120)) || (joy > (joy_neutral + 120));   // 偏离中位死区
 	uint8_t rx_active  = (Serial_3_RxFlag == 1) || (Serial_RxFlag == 1);
 
 	if (joy_active || rx_active)
@@ -110,13 +112,59 @@ enum cmd_status sys_status = error;
 float target_speed = 0;
 // 死区 AD值
 #define DEAD_ZONE 100
-// 油门归零偏置 AD值
-#define SPEED_AD_OFFSET -57
+// 【已废弃】油门归零偏置 AD值：原来是硬编码 -57，按某一块板/某一只摇杆标定的，
+// 换板或摇杆回位稍有偏差就会把“中位”推到死区边缘，静止时变成 1~5% 的小油门 →
+// 电机归零后还在慢转。2026-11-24 改为上电自学习中位（joy_neutral），不再使用它。
+// #define SPEED_AD_OFFSET -57
 // 动力系数
 #define SPEED_LEVEL_L	0.3f
 #define SPEED_LEVEL_M	0.5f
 #define SPEED_LEVEL_H	0.9f
 float motor_speed_percentage = SPEED_LEVEL_M;
+
+/* ===== 摇杆中位自学习（2026-11-24）=====
+ * 上电时（手离开摇杆）采样取平均作为中位，替代硬编码偏移量。
+ * 映射约定：AD 低于中位 = 前进（target_speed < 100），AD 高于中位 = 刹车（> 100）。
+ *   这与电调 Motor_Control（正=油门、负=刹车）和本文件“限速/停止模式”分支一致。
+ */
+#define JOY_NEUTRAL_SAMPLES	64		// 采样次数
+#define JOY_DEAD_ZONE		120		// 中位死区（AD 计数，约 2.9% 满量程）
+#define JOY_SPAN			2048.0f	// 中位到任一端的行程（保持原来 0~200 的量程不变）
+uint8_t joy_neutral_ready = 0;
+
+// 上电自学习：取 JOY_NEUTRAL_SAMPLES 次采样的平均作为中位。要求上电时不要碰油门。
+//
+// ⚠ 2026-11-24 21:35 修正（重要）：初版写成
+//     while (AD_Value[0] == 0 && (APP_time - start) < 300);
+//   本工程的 `AD_Value`（DMA 目标）与 `APP_time`（TIM2 中断里递增）都**没有 volatile**，
+//   空循环体 + 循环条件里的非 volatile 读会被 GCC 直接优化成 `b .`（自跳死循环）；
+//   上电瞬间 AD_Value[0] 还是 0，于是程序永久卡在 main 开头（OLED 不亮、按什么都没反应）。
+//   实测 PC 卡在 0x080029a4 = `b.n 0x080029a4`。
+//   现在改成：固定次数的“读-延时”，靠 Delay_ms 调用阻断优化，不依赖任何“等变量变化”的循环。
+static void joy_neutral_learn(void)
+{
+	int32_t sum = 0;
+	uint16_t n = 0;
+
+	Delay_ms(10);		// 先给 ADC/DMA 几 ms 出数时间
+
+	for (uint8_t i = 0; i < JOY_NEUTRAL_SAMPLES; i++)
+	{
+		int16_t v = (int16_t)AD_Value[0];
+		Delay_ms(2);
+		if (v >= 50)		// <50 视为还没出数/异常样本，丢弃
+		{
+			sum += v;
+			n++;
+		}
+	}
+
+	int16_t neutral = (n >= 8) ? (int16_t)(sum / n) : 2048;
+	if (neutral < 300 || neutral > 3800)	neutral = 2048;		// 明显异常（摇杆被拉住/没接）→ 用中位兜底
+	joy_neutral = neutral;
+	joy_neutral_ready = 1;
+}
+
 // 方向
 int8_t run_direction_set = 1;		// 1正向 -1反向 0停止 设置方向
 int8_t run_direction_report = 1;	// 1正向 -1反向 0停止 上报方向
@@ -725,6 +773,7 @@ int main(void)
 	Serial_Init();
 	Serial_3_Init();
 	AD_Init();
+	joy_neutral_learn();		// 摇杆中位自学习：上电时手不要碰油门，约 130ms 完成
 
 	Store_Init();
 
@@ -742,13 +791,20 @@ int main(void)
 	OLED_ShowString(0, 0, "Battery", OLED_6X8);
 	OLED_ShowFloatNum(66, 0, 0.00, 1, 2, OLED_6X8);		// 遥控电量
 	OLED_ShowFloatNum(96, 0, 00.00, 2, 2, OLED_6X8);	// 滑板电量
-	// 第二行
-	OLED_ShowString(0, 9, "Temperture", OLED_6X8);
-	OLED_ShowFloatNum(66, 9, 000.0, 3, 1, OLED_6X8);	// 电调温度
+	// 第二行：温度 + 母线电流
+	// 2026-11-24 V2.3：把 "Temperture"(10 字符) 缩短成 "Temp"(4 字符)，
+	// 腾出的位置给电流，并把电流字段加宽到能显示 "10.0"（2 位整数）。
+	//   x=0   "Temp"                       0~23
+	//   x=26  温度值  窄 2 位 26~49 / 宽 3 位 26~55
+	//   x=70  "I:"                          70~81   （与温度之间留 2~3 个字符的空隙）
+	//   x=82  电流值 2 位整数+1 位小数      82~105
+	OLED_ShowString(0, 9, "Temp", OLED_6X8);
+	OLED_ShowFloatNum(26, 9, 000.0, 3, 1, OLED_6X8);	// 电调温度
+	OLED_ShowString(70, 9, "I:", OLED_6X8);				// 母线电流标签
+	OLED_ShowFloatNum(82, 9, 00.0, 2, 1, OLED_6X8);		// 母线电流
 	// 第三行
 	OLED_ShowFloatNum(10, 20, 00.00, 2, 2, OLED_8X16);	// 速度
 	OLED_ShowString(55, 27, "km/h", OLED_6X8);
-	OLED_ShowString(96, 9, "I:0.0", OLED_6X8);	// 母线电流静态标签（第二行右侧空白区，连接后动态刷新）
 	// 第四行
 	OLED_ShowString(10, 38, "Start up", OLED_8X16);		// 系统状态
 	OLED_ShowString(111, 38, "@@", OLED_8X16);			// 亮块
@@ -808,18 +864,25 @@ int main(void)
 			Log_add(LOG_NTP_SUCCESS, "NTP_status success");
 		}
 
-		// 遥控通信 将电位器AD值缩放到0-200作为占空比发送给电调
-		// speed=100时为0位置
-		int16_t speed_AD = AD_Value[0] + SPEED_AD_OFFSET;
-		// 限幅保护
-		if (speed_AD < 0)		speed_AD = 0;
-		if (speed_AD > 4095)	speed_AD = 4095;
-		// 死区设置
-		if (speed_AD >= 2048 - DEAD_ZONE && speed_AD <= 2048 + DEAD_ZONE)
+		// 遥控通信：摇杆 AD → target_speed(0~200)，100 = 中位
+		// 2026-11-24：改用上电自学习的中位 + 对称死区，替掉硬编码 SPEED_AD_OFFSET。
+		//   摇杆向上（AD 减小）→ delta < 0 → target < 100 → 前进；
+		//   摇杆向下（AD 增大）→ delta > 0 → target > 100 → 刹车。
+		int16_t delta = (int16_t)AD_Value[0] - joy_neutral;
+		if (delta > -JOY_DEAD_ZONE && delta < JOY_DEAD_ZONE)
 		{
-			speed_AD = 2048;
+			delta = 0;			// 中位死区：静止时必须严格等于 100，否则电调会得到 ±1~4 的残留油门
 		}
-		target_speed = ((float)speed_AD * 200.0f) / 4096.0f;
+		if (delta == 0)
+		{
+			target_speed = 100.0f;
+		}
+		else
+		{
+			target_speed = 100.0f + (float)delta * 100.0f / JOY_SPAN;
+			if (target_speed < 0.0f)	target_speed = 0.0f;
+			if (target_speed > 200.0f)	target_speed = 200.0f;
+		}
 		// 限速
 		if (target_speed < 100)
 		{
@@ -1036,41 +1099,39 @@ void CMD_heartbeat(uint8_t *pack)
 	boardStatus_Motor_hall_error = (packet->status >> 4) & 0x01;
 
 	float motor_speed = packet->speed;
-	car_speed = motor_speed;
 
-	int16_t speed_centi = (int16_t)(motor_speed * 100.0f + ((motor_speed >= 0) ? 0.5f : -0.5f));
+	// 2026-11-24：速度符号的根在电调（Hall.h 的 HALL_CMD_DIR_SIGN 已归一化成“前进=正”）。
+	// 这里显示速率大小，方向由右上角箭头(->/<-)单独表达；
+	// car_speed 必须用绝对值：它被 key_runloop() 用来判“是否静止才允许进停止模式”，
+	// 用带符号值会让“前进时速度为负 → 永远 <=1.0 → 骑行中也能进停止模式”。
+	float motor_speed_abs = (motor_speed >= 0) ? motor_speed : (-motor_speed);
+	car_speed = motor_speed_abs;
+
+	int16_t speed_centi = (int16_t)(motor_speed_abs * 100.0f + 0.5f);
 	if (speed_centi != last_speed_centi)
 	{
 		last_speed_centi = speed_centi;
-		if (motor_speed >= 0)
-		{
-			OLED_ShowString(2, 20, " ", OLED_8X16);
-			OLED_ShowFloatNum(10, 20, motor_speed, 2, 2, OLED_8X16);
-		}
-		else
-		{
-			OLED_ShowFloatNum(2, 20, motor_speed, 2, 2, OLED_8X16);
-		}
+		OLED_ShowString(2, 20, " ", OLED_8X16);
+		OLED_ShowFloatNum(10, 20, motor_speed_abs, 2, 2, OLED_8X16);
 		OLED_UpdateArea(2, 20, 60, 16);
 	}
 
-	// 母线电流显示：第二行右侧空白区(x=96~125，温度数值之后)。
-	// 注意第三行左侧 y=27 与速度大字体(8X16, x=2~50, y=20~35)重叠，不能用。
+	// 母线电流显示（V2.3 新布局）：x=70 "I:"，x=82 起 2 位整数+1 位小数（可显示 10.0）
 	{
 		float current_show = packet->current;
 		if (current_show < 0.0f) current_show = 0.0f;
-		if (current_show > 9.9f) current_show = 9.9f;	// 防止字符超出屏幕右边界
+		if (current_show > 19.9f) current_show = 19.9f;	// 2 位整数上限
 		int16_t current_deci = (int16_t)(current_show * 10.0f + 0.5f);
 		if (current_deci != last_current_deci)
 		{
 			last_current_deci = current_deci;
-			OLED_ShowString(96, 9, "I:", OLED_6X8);
-			OLED_ShowFloatNum(108, 9, current_show, 1, 1, OLED_6X8);
-			OLED_UpdateArea(96, 9, 30, 8);
+			OLED_ShowFloatNum(82, 9, current_show, 2, 1, OLED_6X8);
+			OLED_UpdateArea(70, 9, 40, 8);		// x=70..109（"I:" + 数值）
 		}
 	}
 
-	if (motor_speed >= 0)
+	// 2026-11-24：原来这里套了 `if (motor_speed >= 0)`，电调报负速度时（前进/倒溜）
+	// 滑板电量与电调温度就整段停止刷新，屏上一直显示旧值。电量/温度与转速符号无关，去掉该条件。
 	{
 		int16_t car_battery_centi = (int16_t)(packet->battery * 100.0f + 0.5f);
 		if (car_battery_centi != last_car_battery_centi)
@@ -1087,12 +1148,12 @@ void CMD_heartbeat(uint8_t *pack)
 			last_temp_wide = temp_wide;
 			if (temp_wide)
 			{
-				OLED_ShowFloatNum(66, 9, packet->temperature, 3, 1, OLED_6X8);
+				OLED_ShowFloatNum(26, 9, packet->temperature, 3, 1, OLED_6X8);	// 100.0 以上占 5 字符
 			}
 			else
 			{
-				OLED_ShowString(66, 9, "     ", OLED_6X8);
-				OLED_ShowFloatNum(66, 9, packet->temperature, 2, 1, OLED_6X8);
+				OLED_ShowString(26, 9, "     ", OLED_6X8);						// 先擦掉可能的 3 位残留
+				OLED_ShowFloatNum(26, 9, packet->temperature, 2, 1, OLED_6X8);
 			}
 		}
 	}

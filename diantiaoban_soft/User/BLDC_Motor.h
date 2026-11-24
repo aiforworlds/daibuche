@@ -5,6 +5,7 @@ extern float Motor_filter_prev;
 extern uint8_t Motor_hallError;
 extern uint8_t Motor_currentLimiting;		// 1=正在母线限流（调试用）
 extern volatile int8_t Motor_run_direction;
+extern volatile uint8_t Motor_brake3;		// 1=三相短路制动中（V2.6）
 extern volatile int8_t Comm_Adv_Fwd;
 extern volatile int8_t Comm_Adv_Rev;
 
@@ -18,6 +19,9 @@ void Motor_Control_Init (void);
 void Motor_Direction(int Direction);
 void Motor_Commutation(void);
 void Motor_Control(int inputSpeed);
+int16_t BrakeControl(int16_t SetSpeed);		// 两相短路制动（V2.5）
+void BrakeControl_Reset(void);				// 离开刹车时清基准
+void Motor_BrakeShort3(void);				// 三相下桥全通 = 三相短路制动（V2.6）
 
 #endif
 
